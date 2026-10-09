@@ -33,7 +33,7 @@ For comparison, Excel reached about 1 GB on the 900k-row file and crashed.
 
 ## Install
 
-Download `csvdeck.app.zip` from the releases page if there is one, unzip it and move it to `/Applications`. The app is not notarized, so macOS blocks it the first time: open **System Settings → Privacy & Security** and click **Open Anyway**. It only runs on Apple Silicon Macs.
+Download **[csvdeck-macos-arm64.zip](https://github.com/FelixLC/csvdeck/releases/latest/download/csvdeck-macos-arm64.zip)** from the [latest release](https://github.com/FelixLC/csvdeck/releases/latest), unzip it and move `csvdeck.app` to `/Applications`. The app is not notarized, so macOS blocks it the first time: open **System Settings → Privacy & Security** and click **Open Anyway**. It only runs on Apple Silicon Macs.
 
 To build it yourself, install Rust with [rustup](https://rustup.rs), then run:
 
