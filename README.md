@@ -14,6 +14,7 @@ A fast CSV and Parquet viewer for macOS, written in Rust. It sits between [Moder
 - **Column profiles in every header**: type, distinct count, % missing, plus a histogram or top-values bar. A side panel adds min, max, mean and the 10 most frequent values; click one to filter on it.
 - **Filters and search**: search across all columns, or build filters with contains, =, ≠, starts with, ends with, regex, >, <, is empty, combined with match all or match any. Sort by double-clicking a header.
 - **Spreadsheet-style grid**: header and row numbers stay put while you scroll, resizable columns, range selection, ⌘C copies as TSV, double-click a cell to see its full value.
+- **Folder mode**: open a folder (button, ⌘ Shift O or drag-and-drop) to get a sidebar of every CSV, TSV and Parquet file in it, subfolders included. Filter the list by name, click to switch, or use Option ⏶/⏷.
 - **Export** the filtered view to CSV or Parquet. Hide columns, light and dark themes, delimiter auto-detection.
 
 ![Two filters and a sort on co2e_kg: 38,106 of 2,000,000 rows, filtered in 7 ms](assets/screenshots/filters.png)
@@ -50,7 +51,8 @@ From a terminal: `target/release/csvdeck path/to/file.csv`.
 
 | Keys | Action |
 |---|---|
-| ⌘O / ⌘F | Open file / search all columns |
+| ⌘O / ⌘ Shift O / ⌘F | Open file / open folder / search all columns |
+| Option + ⏶ / ⏷ | Previous / next file in the folder |
 | Arrows, Page Up/Down, Tab, Enter | Move the cursor |
 | ⌘ + arrow | Jump to an edge |
 | Shift + move or click | Extend the selection |
@@ -58,7 +60,7 @@ From a terminal: `target/release/csvdeck path/to/file.csv`.
 
 ## Not there yet
 
-Cell editing, tabs (one file per window), sorting by more than one column, Excel files, an Intel Mac build.
+Cell editing, keeping filters when switching files, sorting by more than one column, Excel files, an Intel Mac build.
 
 ## Layout
 

@@ -1,12 +1,15 @@
 use polars::prelude::*;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Original 1-based row number, carried through filters and sorts. Always column 0.
 pub const ROW: &str = "__csvdeck_row";
 const HIST_BINS: usize = 40;
 const TOP_N: u32 = 10;
+pub const DATA_EXTENSIONS: [&str; 7] = ["csv", "tsv", "psv", "txt", "dat", "parquet", "pq"];
+/// ponytail: stops scanning at this many files; a paged or lazy list if people point it at huge trees.
+const MAX_FOLDER_FILES: usize = 5_000;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Op {
@@ -120,6 +123,38 @@ pub fn sniff_separator(path: &Path) -> u8 {
         .into_iter()
         .max_by_key(|s| line.iter().filter(|&&b| b == *s).count())
         .unwrap_or(b',')
+}
+
+pub fn is_data_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| DATA_EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// Data files under `dir` with their sizes, recursively, skipping hidden entries, sorted by path.
+pub fn list_data_files(dir: &Path) -> Vec<(PathBuf, u64)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let p = e.path();
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(p),
+                Ok(_) if is_data_file(&p) => out.push((p, e.metadata().map_or(0, |m| m.len()))),
+                _ => {}
+            }
+        }
+        if out.len() >= MAX_FOLDER_FILES {
+            break;
+        }
+    }
+    out.truncate(MAX_FOLDER_FILES);
+    out.sort();
+    out
 }
 
 pub fn is_parquet(path: &Path) -> bool {
@@ -377,6 +412,16 @@ mod tests {
         let back = load(&pq, b',', true).unwrap();
         assert_eq!(back.schema(), df.schema());
         assert_eq!(rows(&back, q(vec![filt("age", Op::Gt, "30")], false)), ["Ana", "Dan"]);
+
+        let dir = std::env::temp_dir().join("csvdeck_folder_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::create_dir_all(dir.join(".hidden")).unwrap();
+        for f in ["b.csv", "sub/a.PARQUET", "notes.md", ".hidden/c.csv", ".d.csv"] {
+            std::fs::write(dir.join(f), "x").unwrap();
+        }
+        let found: Vec<_> = list_data_files(&dir).into_iter().map(|(p, _)| p.strip_prefix(&dir).unwrap().to_owned()).collect();
+        assert_eq!(found, [PathBuf::from("b.csv"), PathBuf::from("sub/a.PARQUET")]);
 
         let st = stats(&df, 0, &AtomicU64::new(0)).unwrap();
         assert_eq!(st.len(), 3);

@@ -22,6 +22,7 @@ enum Msg {
     View { gen: u64, res: Result<DataFrame, String>, ms: u128 },
     Stats { gen: u64, stats: Vec<Stats> },
     Exported(Result<PathBuf, String>),
+    Folder { dir: PathBuf, files: Vec<(PathBuf, u64)> },
 }
 
 /// Grid hit target, in data column indices (0 = first CSV column).
@@ -38,6 +39,10 @@ struct App {
     gen: Arc<AtomicU64>,
 
     file: Option<PathBuf>,
+    folder: Option<PathBuf>,
+    folder_files: Vec<(PathBuf, u64)>,
+    file_search: String,
+    reveal_file: bool,
     sep_choice: Option<u8>,
     sep: u8,
     header: bool,
@@ -97,7 +102,7 @@ fn main() -> eframe::Result {
             let _ = macos::CTX.set(cc.egui_ctx.clone());
             let mut app = App::new();
             if let Some(p) = path {
-                app.open(&cc.egui_ctx, p);
+                app.open_path(&cc.egui_ctx, p);
             }
             Ok(Box::new(app))
         }),
@@ -112,6 +117,10 @@ impl App {
             rx,
             gen: Arc::new(AtomicU64::new(0)),
             file: None,
+            folder: None,
+            folder_files: vec![],
+            file_search: String::new(),
+            reveal_file: false,
             sep_choice: None,
             sep: b',',
             header: true,
@@ -169,6 +178,50 @@ impl App {
             let res = engine::load(&path, sep, header).map_err(|e| e.to_string());
             Msg::Loaded { gen, path, sep, res, ms: t.elapsed().as_millis() }
         });
+    }
+
+    fn open_path(&mut self, ctx: &Context, path: PathBuf) {
+        if path.is_dir() {
+            self.open_folder(ctx, path);
+        } else {
+            self.open(ctx, path);
+        }
+    }
+
+    fn open_folder(&mut self, ctx: &Context, dir: PathBuf) {
+        self.folder = Some(dir.clone());
+        self.folder_files.clear();
+        self.file_search.clear();
+        self.status = format!("Scanning {}", dir.display());
+        self.spawn(ctx, move || Msg::Folder { files: engine::list_data_files(&dir), dir });
+    }
+
+    /// Files in the sidebar after the name filter.
+    fn listed_files(&self) -> Vec<&PathBuf> {
+        let needle = self.file_search.to_lowercase();
+        let root = self.folder.as_deref().unwrap_or(std::path::Path::new(""));
+        self.folder_files
+            .iter()
+            .map(|(p, _)| p)
+            .filter(|p| needle.is_empty() || p.strip_prefix(root).unwrap_or(p).to_string_lossy().to_lowercase().contains(&needle))
+            .collect()
+    }
+
+    fn step_file(&mut self, ctx: &Context, delta: isize) {
+        let files = self.listed_files();
+        if files.is_empty() {
+            return;
+        }
+        let at = self.file.as_ref().and_then(|f| files.iter().position(|p| *p == f));
+        let next = match at {
+            Some(i) => (i as isize + delta).clamp(0, files.len() as isize - 1) as usize,
+            None => 0,
+        };
+        if at != Some(next) {
+            let p = files[next].clone();
+            self.reveal_file = true;
+            self.open(ctx, p);
+        }
     }
 
     fn run_query(&mut self, ctx: &Context) {
@@ -262,6 +315,15 @@ impl App {
                     self.stats = stats;
                     self.busy = None;
                 }
+                Msg::Folder { dir, files } if self.folder.as_ref() == Some(&dir) => {
+                    self.status = if files.is_empty() { "No CSV, TSV or Parquet files in this folder".into() } else { String::new() };
+                    let first = files.first().map(|f| f.0.clone());
+                    self.folder_files = files;
+                    let current_listed = self.file.as_ref().is_some_and(|f| self.folder_files.iter().any(|(p, _)| p == f));
+                    if let (false, Some(p)) = (current_listed, first) {
+                        self.open(ctx, p);
+                    }
+                }
                 Msg::Exported(res) => {
                     self.busy = None;
                     self.status = match res {
@@ -328,6 +390,10 @@ impl App {
     // ---------- keyboard ----------
 
     fn keyboard(&mut self, ctx: &Context) {
+        // ⌘⇧O first: ⌘O also matches when shift is held.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::O)) {
+            self.pick_folder(ctx);
+        }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::O)) {
             self.pick_file(ctx);
         }
@@ -336,6 +402,14 @@ impl App {
         }
         if ctx.egui_wants_keyboard_input() {
             return;
+        }
+        if self.folder.is_some() {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, Key::ArrowDown)) {
+                self.step_file(ctx, 1);
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, Key::ArrowUp)) {
+                self.step_file(ctx, -1);
+            }
         }
         let Some(view) = &self.view else { return };
         let n = view.height();
@@ -398,11 +472,17 @@ impl App {
 
     fn pick_file(&mut self, ctx: &Context) {
         if let Some(p) = rfd::FileDialog::new()
-            .add_filter("Data files", &["csv", "tsv", "txt", "psv", "dat", "parquet", "pq"])
+            .add_filter("Data files", &engine::DATA_EXTENSIONS)
             .add_filter("All files", &["*"])
             .pick_file()
         {
             self.open(ctx, p);
+        }
+    }
+
+    fn pick_folder(&mut self, ctx: &Context) {
+        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+            self.open_folder(ctx, dir);
         }
     }
 
@@ -411,8 +491,11 @@ impl App {
     fn toolbar(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         ui.horizontal(|ui| {
-            if ui.button("📂 Open").on_hover_text("⌘O").clicked() {
+            if ui.button("📂 Open").on_hover_text("Open a file  ⌘O").clicked() {
                 self.pick_file(&ctx);
+            }
+            if ui.button("🗁 Folder").on_hover_text("Open a folder  ⌘ Shift O").clicked() {
+                self.pick_folder(&ctx);
             }
             if let Some(f) = &self.file {
                 ui.label(RichText::new(f.file_name().unwrap_or_default().to_string_lossy()).strong())
@@ -591,6 +674,51 @@ impl App {
         });
     }
 
+    fn files_panel(&mut self, ui: &mut Ui) {
+        let Some(root) = self.folder.clone() else { return };
+        let ctx = ui.ctx().clone();
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let name = root.file_name().unwrap_or(root.as_os_str()).to_string_lossy();
+            ui.strong(format!("🗁 {name}")).on_hover_text(root.display().to_string());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("🗙").on_hover_text("Close folder").clicked() {
+                    self.folder = None;
+                }
+            });
+        });
+        ui.add(TextEdit::singleline(&mut self.file_search).hint_text("Filter files").desired_width(f32::INFINITY));
+        let files: Vec<PathBuf> = self.listed_files().into_iter().cloned().collect();
+        ui.weak(format!("{} of {} files · Option ⏶ ⏷ to switch", files.len(), self.folder_files.len()));
+        ui.add_space(2.0);
+        let mut picked = None;
+        let reveal = std::mem::take(&mut self.reveal_file);
+        ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            for p in &files {
+                let rel = p.strip_prefix(&root).unwrap_or(p).to_string_lossy().to_string();
+                let size = self.folder_files.iter().find(|(f, _)| f == p).map_or(0, |f| f.1);
+                let selected = self.file.as_ref() == Some(p);
+                let resp = ui
+                    .add(
+                        egui::Button::selectable(selected, rel)
+                            .truncate()
+                            .right_text(RichText::new(human_size(size)).weak().small())
+                            .min_size(vec2(ui.available_width(), 0.0)),
+                    )
+                    .on_hover_text(p.display().to_string());
+                if selected && reveal {
+                    resp.scroll_to_me(None);
+                }
+                if resp.clicked() && !selected {
+                    picked = Some(p.clone());
+                }
+            }
+        });
+        if let Some(p) = picked {
+            self.open(&ctx, p);
+        }
+    }
+
     fn summary(&mut self, ui: &mut Ui) {
         let Some(j) = self.sel_col.filter(|&j| j < self.names.len()) else {
             ui.add_space(12.0);
@@ -707,10 +835,13 @@ impl App {
             ui.add_space(ui.available_height() * 0.35);
             ui.label(RichText::new("csvdeck").size(32.0).strong());
             ui.add_space(4.0);
-            ui.weak("Drop a CSV, TSV or Parquet file here, or");
+            ui.weak("Drop a CSV, TSV or Parquet file or a folder here, or");
             ui.add_space(8.0);
             if ui.button(RichText::new("Open file…  ⌘O").size(16.0)).clicked() {
                 self.pick_file(&ctx);
+            }
+            if ui.button(RichText::new("Open folder…  ⌘ Shift O").size(16.0)).clicked() {
+                self.pick_folder(&ctx);
             }
         });
     }
@@ -1056,11 +1187,11 @@ impl eframe::App for App {
         self.handle_messages(&ctx);
 
         if let Some(p) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty())) {
-            self.open(&ctx, p);
+            self.open_path(&ctx, p);
         }
         #[cfg(target_os = "macos")]
         if let Some(p) = macos::take_opened() {
-            self.open(&ctx, p);
+            self.open_path(&ctx, p);
         }
         self.keyboard(&ctx);
 
@@ -1082,6 +1213,11 @@ impl eframe::App for App {
             ui.add_space(2.0);
             self.status_bar(ui);
         });
+        if self.folder.is_some() {
+            egui::Panel::left("files").resizable(true).default_size(240.0).min_size(180.0).show(ui, |ui| {
+                self.files_panel(ui);
+            });
+        }
         if self.show_summary && self.df.is_some() {
             egui::Panel::right("summary").resizable(true).default_size(300.0).min_size(260.0).show(ui, |ui| {
                 ScrollArea::vertical().show(ui, |ui| self.summary(ui));
@@ -1209,6 +1345,15 @@ fn compact(n: usize) -> String {
         1_000..10_000 => format!("{:.1}k", n as f64 / 1e3),
         10_000..1_000_000 => format!("{}k", n / 1_000),
         _ => format!("{:.1}M", n as f64 / 1e6),
+    }
+}
+
+fn human_size(bytes: u64) -> String {
+    match bytes {
+        0..1_000 => format!("{bytes} B"),
+        1_000..1_000_000 => format!("{:.0} KB", bytes as f64 / 1e3),
+        1_000_000..1_000_000_000 => format!("{:.1} MB", bytes as f64 / 1e6),
+        _ => format!("{:.1} GB", bytes as f64 / 1e9),
     }
 }
 
