@@ -557,7 +557,9 @@ impl App {
     fn columns_menu(&mut self, ui: &mut Ui) {
         let hidden = self.hidden.iter().filter(|h| **h).count();
         let label = if hidden > 0 { format!("☰ Columns ({hidden} hidden)") } else { "☰ Columns".into() };
-        ui.menu_button(label, |ui| {
+        // Stay open while clicking checkboxes and the search box inside.
+        let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        egui::containers::menu::MenuButton::new(label).config(config).ui(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Show all").clicked() {
                     self.hidden.iter_mut().for_each(|h| *h = false);
