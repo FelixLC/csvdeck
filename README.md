@@ -45,7 +45,14 @@ cp -R dist/csvdeck.app /Applications/
 
 The pinned toolchain (`rust-toolchain.toml`) installs itself on the first build. A first release build takes about 5 minutes, mostly compiling Polars.
 
-From a terminal: `target/release/csvdeck path/to/file.csv`.
+To open files and folders from a terminal, put the launcher on your PATH:
+
+```bash
+ln -s "$PWD/csvdeck.sh" ~/.local/bin/csvdeck   # any directory on your PATH
+csvdeck path/to/file.csv                       # or a folder: csvdeck path/to/folder
+```
+
+Each call opens a new window and returns to the shell right away.
 
 ## Keyboard
 
